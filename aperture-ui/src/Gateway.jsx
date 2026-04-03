@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 
 const API_URL = 'http://127.0.0.1:8000';
+// Сюда вставь адрес, на который будут приходить тестовые SOL
+const TREASURY_WALLET = "ВАШ_АДРЕС_SOL_ИЗ_SOLFLARE"; 
 
 export default function Gateway() {
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, sendTransaction } = useWallet();
+  const { connection } = useConnection();
   const [balance, setBalance] = useState(0);
   const [isDemo, setIsDemo] = useState(false);
   const [logs, setLogs] = useState([{ msg: "> System initialized. Waiting for payload...", type: "system" }]);
@@ -33,30 +37,71 @@ export default function Gateway() {
     }
   }, [logs]);
 
+  // Функция загрузки баланса
+  const fetchBalance = async () => {
+    try {
+      const walletAddr = connected && publicKey ? publicKey.toString() : null;
+      const url = walletAddr 
+        ? `${API_URL}/balance?wallet=${walletAddr}&guest_id=${guestId}`
+        : `${API_URL}/balance?guest_id=${guestId}`;
+
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      setBalance(data.balance);
+      setIsDemo(data.is_demo && !walletAddr);
+    } catch (error) {
+      addLog("Connection to Gateway failed.", "error");
+    }
+  };
+
   useEffect(() => {
-    const fetchBalance = async () => {
-      try {
-        const walletAddr = connected && publicKey ? publicKey.toString() : null;
-        const url = walletAddr 
-          ? `${API_URL}/balance?wallet=${walletAddr}&guest_id=${guestId}`
-          : `${API_URL}/balance?guest_id=${guestId}`;
-
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        setBalance(data.balance);
-        setIsDemo(data.is_demo && !walletAddr);
-
-        if (walletAddr) {
-          addLog(`Web3 Identity synced: ${walletAddr.slice(0, 4)}...${walletAddr.slice(-4)}`, "success");
-        }
-      } catch (error) {
-        addLog("Connection to Gateway failed.", "error");
-      }
-    };
-
     fetchBalance();
+    if (connected && publicKey) {
+        addLog(`Web3 Identity synced: ${publicKey.toString().slice(0, 4)}...${publicKey.toString().slice(-4)}`, "success");
+    }
   }, [connected, publicKey, guestId]);
+
+  // МАГИЯ SOLANA: Реальное пополнение через транзакцию
+  const handleTopUp = async () => {
+    if (!connected || !publicKey) return addLog("Connect wallet first!", "error");
+    
+    try {
+      addLog("Initiating transaction (0.01 SOL)...", "system");
+      
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: new PublicKey(TREASURY_WALLET),
+          lamports: 0.01 * LAMPORTS_PER_SOL, 
+        })
+      );
+
+      const signature = await sendTransaction(transaction, connection);
+      addLog(`Transaction sent! Sig: ${signature.slice(0, 8)}...`, "info");
+      addLog("Verifying on-chain...", "system");
+
+      // Стучимся на бэкенд, чтобы он подтвердил оплату
+      const response = await fetch(`${API_URL}/verify-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signature: signature,
+          wallet: publicKey.toString()
+        })
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        setBalance(result.new_balance);
+        addLog(`Top-up successful! New balance: ${result.new_balance} USDC`, "success");
+      } else {
+        addLog("Payment verification failed.", "error");
+      }
+    } catch (error) {
+      addLog(`Transaction failed: ${error.message}`, "error");
+    }
+  };
 
   const handleExecute = async () => {
     if (!code.trim()) return addLog("Payload is empty.", "error");
@@ -84,7 +129,6 @@ export default function Gateway() {
         addLog(`Cost: ${result.cost} USDC. Execution Approved.`, "success");
         setBalance(result.new_balance);
       } else {
-        // Умный обработчик ошибок
         const errorMsg = typeof result.detail === 'object' ? JSON.stringify(result.detail) : result.detail;
         addLog(`Gateway Error: ${errorMsg}`, "error");
       }
@@ -107,6 +151,11 @@ export default function Gateway() {
             <span className="label">Balance:</span>
             <span id="balance-display">{balance.toFixed(4)}</span> <span className="currency">USDC</span>
             {isDemo && <div className="badge">DEMO MODE</div>}
+            {connected && (
+              <button onClick={handleTopUp} className="btn-topup">
+                Top Up
+              </button>
+            )}
           </div>
           <WalletMultiButton className="solana-btn" />
         </div>
