@@ -1,1 +1,16 @@
-__pycache__/ 
+# Библиотеки
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
+# База данных и логи
+aperture.db
+*.log
+
+# Окружение и секреты
+.env
+.venv
+env/
+venv/
+.DS_Store

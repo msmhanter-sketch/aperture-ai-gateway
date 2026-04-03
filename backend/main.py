@@ -1,87 +1,82 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import random
-import time
-import os
+from sqlalchemy.orm import Session
+from typing import Optional
+import database
+from ai_engine import analyze_code_complexity
 
-# Инициализация приложения
-app = FastAPI(title="Aperture AI-Gateway | Cloud Edition")
+app = FastAPI(title="Aperture AI-Gateway")
 
-# 1. Настройка CORS (чтобы браузер не блокировал запросы к твоему IP)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2. Модель данных (что мы ждем от фронтенда)
-class Payload(BaseModel):
-    user_wallet: str
-    code_or_query: str
+def get_db():
+    db = database.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# 3. Эндпоинт для открытия сайта (Главная страница)
-@app.get("/")
-async def read_index():
-    # Путь к файлу index.html, который лежит в папке /app
-    # Если ты запускаешь из папки /backend, путь будет ../app/index.html
-    index_path = os.path.join(os.path.dirname(__file__), "..", "app", "index.html")
-    return FileResponse(index_path)
+# Обновленная модель: теперь параметры могут быть пустыми (null)
+class RunRequest(BaseModel):
+    code: str
+    guest_id: Optional[str] = None
+    wallet: Optional[str] = None
 
-# 4. Логика ИИ-Агента (Оценка сложности)
-def ai_evaluate_complexity(payload_text: str) -> int:
-    print(f"\n[AI Agent] Analyzing incoming payload...")
+@app.get("/balance")
+def get_balance(guest_id: Optional[str] = None, wallet: Optional[str] = None, db: Session = Depends(get_db)):
+    if not guest_id and not wallet:
+        raise HTTPException(status_code=400, detail="Provide guest_id or wallet")
     
-    # Ищем тяжелые конструкции: циклы, матрицы, рекурсию
-    if any(word in payload_text.lower() for word in ["while", "for", "matrix", "np.", "recursion"]):
-        score = random.randint(8, 10)
-        print(f"⚠️ High complexity detected! Score: {score}/10")
-    elif any(word in payload_text.lower() for word in ["print", "hello", "sum(a,b)"]):
-        score = random.randint(1, 3)
-        print(f"✅ Light task detected. Score: {score}/10")
+    # Ищем пользователя
+    user = db.query(database.User).filter(
+        (database.User.guest_id == guest_id) | (database.User.wallet == wallet)
+    ).first()
+
+    if user:
+        # Если юзер зашел с кошельком, но в базе он еще гость — привязываем кошелек
+        if wallet and not user.wallet:
+            user.wallet = wallet
+            db.commit()
+            db.refresh(user)
     else:
-        score = 5
-        print(f"ℹ️ Standard task. Score: {score}/10")
-        
-    return score
+        # Создаем нового гостя
+        user = database.User(guest_id=guest_id, wallet=wallet, balance=0.10, is_demo=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
-# 5. Имитация взаимодействия со смарт-контрактом Solana
-def update_solana_contract(score: int):
-    # Формула: чем выше сложность, тем дороже стриминг
-    # Fee = (Complexity * 0.05)
-    new_burn_rate = score * 0.05
-    
-    print(f"[Solana CPI] Sending 'update_burn_rate' to Program ID...")
-    print(f"[On-Chain] New dynamic rate set: {new_burn_rate:.2f} USDC/sec")
-    
-    return round(new_burn_rate, 2)
+    return {"balance": round(user.balance, 4), "is_demo": user.is_demo}
 
-# 6. Главный рабочий эндпоинт /execute
 @app.post("/execute")
-async def execute_task(req: Payload):
-    print("="*50)
-    print(f"INCOMING REQUEST from: {req.user_wallet[:8]}...")
-    
-    # Шаг 1: Оценка ИИ
-    complexity_score = ai_evaluate_complexity(req.code_or_query)
-    
-    # Шаг 2: Обновление цены в блокчейне (имитация)
-    burn_rate = update_solana_contract(complexity_score)
-    
-    # Шаг 3: Выполнение задачи (имитация задержки процессора)
-    print(f"[Compute] Processing payload...")
-    time.sleep(2.5) 
-    
-    # Шаг 4: Сброс цены после выполнения
-    print("[Solana CPI] Task finished. Resetting burn_rate to 0.00")
-    print("="*50)
-    
+def execute_code(req: RunRequest, db: Session = Depends(get_db)):
+    user = db.query(database.User).filter(
+        (database.User.guest_id == req.guest_id) | (database.User.wallet == req.wallet)
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in Gateway. Re-sync wallet.")
+
+    ai_result = analyze_code_complexity(req.code)
+    if ai_result["status"] == "error":
+        raise HTTPException(status_code=500, detail=ai_result["message"])
+
+    cost = ai_result["calculated_rate_usd_sec"]
+
+    if user.balance < cost:
+        raise HTTPException(status_code=402, detail="Trial period exhausted. Connect Solana Wallet.")
+
+    user.balance -= cost
+    db.commit()
+
     return {
         "status": "success",
-        "complexity_score": complexity_score,
-        "fee_per_second": burn_rate,
-        "message": "Aperture executed and settled on-chain."
+        "cost": cost,
+        "new_balance": round(user.balance, 4),
+        "ai_analysis": ai_result["scores"]
     }
