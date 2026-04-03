@@ -1,87 +1,69 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from typing import Optional
-import database
-from ai_engine import analyze_code_complexity
+import math
+import json
+import os
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
 
-app = FastAPI()
+# Загружаем ключи
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Разрешаем фронтенду общаться с бэкендом
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Инициализация клиента
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ТВОЙ АДРЕС ДЛЯ ПРИЕМА ПЛАТЕЖЕЙ
-TREASURY_WALLET = "ВАШ_SOL_АДРЕС" 
+def calculate_quantum_price(cpu_score, ram_score, net_score, hw_power=1.0):
+    """
+    Твоя величественная формула: Rate = (Base * ln(1 + C)) / H
+    """
+    base_rate = 0.0005  # Базовая цена в USDC
+    total_complexity = cpu_score + ram_score + net_score
+    
+    if total_complexity == 0:
+        return base_rate
+        
+    rate = (base_rate * math.log(1 + total_complexity)) / hw_power
+    return round(rate, 6)
 
-class RunRequest(BaseModel):
-    code: str
-    guest_id: Optional[str] = None
-    wallet: Optional[str] = None
-
-class PaymentRequest(BaseModel):
-    signature: str
-    wallet: str
-
-def get_db():
-    db = database.SessionLocal()
+def analyze_code_complexity(code_snippet: str):
+    prompt = f"""
+    You are an expert AI code auditor for a DePIN compute network.
+    Analyze the following Python code and estimate its resource complexity (1-100) for:
+    - CPU: Loops, math, recursion.
+    - RAM: Arrays, heavy imports.
+    - Network: API calls, data transfer.
+    
+    Respond ONLY in strict JSON format:
+    {{"cpu": 10, "ram": 5, "network": 0, "reason": "Explanation"}}
+    
+    Code:
+    {code_snippet}
+    """
+    
     try:
-        yield db
-    finally:
-        db.close()
-
-@app.get("/balance")
-def get_balance(guest_id: Optional[str] = None, wallet: Optional[str] = None, db: Session = Depends(get_db)):
-    user = db.query(database.User).filter((database.User.guest_id == guest_id) | (database.User.wallet == wallet)).first()
-    if user:
-        if wallet and not user.wallet:
-            user.wallet = wallet
-            db.commit()
-    else:
-        user = database.User(guest_id=guest_id, wallet=wallet, balance=0.10, is_demo=True)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    return {"balance": round(user.balance, 4), "is_demo": user.is_demo}
-
-# НОВЫЙ ЭНДПОИНТ ДЛЯ ПОПОЛНЕНИЯ
-@app.post("/verify-payment")
-def verify_payment(req: PaymentRequest, db: Session = Depends(get_db)):
-    user = db.query(database.User).filter(database.User.wallet == req.wallet).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Connect wallet first.")
-    
-    # В MVP мы верим фронтенду, что транзакция прошла (для хакатона это ок)
-    # Начисляем 5.0 USDC за пополнение (0.01 SOL)
-    user.balance += 5.0
-    user.is_demo = False
-    db.commit()
-    return {"status": "success", "new_balance": round(user.balance, 4)}
-
-@app.post("/execute")
-def execute_code(req: RunRequest, db: Session = Depends(get_db)):
-    user = db.query(database.User).filter((database.User.guest_id == req.guest_id) | (database.User.wallet == req.wallet)).first()
-    
-    ai_result = analyze_code_complexity(req.code)
-    if ai_result["status"] == "error":
-        raise HTTPException(status_code=500, detail=ai_result["message"])
-
-    cost = ai_result["calculated_rate_usd_sec"]
-
-    if user.balance < cost:
-        raise HTTPException(status_code=402, detail="Low balance. Please Top Up.")
-
-    user.balance -= cost
-    db.commit()
-
-    return {
-        "status": "success",
-        "cost": cost,
-        "new_balance": round(user.balance, 4),
-        "ai_analysis": ai_result["scores"]
-    }
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1 
+            ),
+        )
+        
+        result = json.loads(response.text)
+        
+        # Считаем цену по формуле
+        price_per_sec = calculate_quantum_price(
+            cpu_score=result.get("cpu", 1),
+            ram_score=result.get("ram", 1),
+            net_score=result.get("network", 0)
+        )
+        
+        return {
+            "status": "success",
+            "scores": result,
+            "calculated_rate_usd_sec": price_per_sec
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": f"AI Audit failed: {str(e)}"}
