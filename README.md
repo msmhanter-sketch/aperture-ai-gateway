@@ -23,3 +23,19 @@ This high-frequency dynamic pricing is **only possible on Solana**. Updating the
 - **Smart Contract:** Rust / Anchor Framework
 - **AI Agent & Backend:** Python / FastAPI / LLM Complexity Evaluation
 - **Frontend:** Next.js / Tailwind
+## 🗺 Roadmap: The Future of Aperture
+- **Q2 2026:** Beta launch for selected Python & Rust developers. Integration with Solana Mainnet.
+- **Q3 2026:** "Aperture Hub" — a marketplace where developers can discover and buy access to specialized AI-monetized APIs.
+- **Q4 2026:** Zero-Knowledge (ZK) proofs for AI complexity evaluation to ensure the Agent never overcharges users.
+- **2027:** Universal SDK for any Web3 project to plug-in Aperture as their primary billing layer.
+
+## 💰 The Economic Edge
+Traditional Web2 billing (Stripe/PayPal) takes 2.9% + $0.30 per transaction. This makes micro-payments (like $0.01 for a single API call) impossible. 
+**Aperture on Solana** allows for:
+- **Zero Fixed Fees:** Pay exactly $0.0001 if the compute was tiny.
+- **Instant Settlement:** Developers get paid the moment the code finishes executing.
+- **Elastic Pricing:** High demand = Higher price, naturally balancing the server load.
+
+## 🛡 Security & Anti-DDoS
+Aperture turns the "Cost of Attack" into a profit for the developer. 
+If a malicious actor tries to flood the server with heavy `O(n!)` loops, our AI Agent instantly detects the complexity and raises the `burn_rate` to a level where the attack becomes financially ruinous for the attacker, while the developer earns maximum profit during the "attack".
