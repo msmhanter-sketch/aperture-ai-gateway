@@ -47,23 +47,30 @@ def start_agent():
                 with open("temp_task.py", "w", encoding="utf-8") as f:
                     f.write(code)
                 
+                # 🔥 НОВОЕ: Засекаем время старта
+                start_exec = time.time()
+                
                 # Запускаем скрипт
                 result = subprocess.run(
                     ["python", "temp_task.py"], 
                     capture_output=True, text=True
                 )
                 
+                # 🔥 НОВОЕ: Считаем время выполнения
+                execution_duration = round(time.time() - start_exec, 4)
+                
                 # Читаем вывод (или ошибку)
                 output = result.stdout if result.returncode == 0 else result.stderr
                 if not output:
                     output = "Code executed silently (no output)."
                 
-                # Отправляем результат обратно на сервер
+                # 3. Отправляем результат С ВРЕМЕНЕМ выполнения
                 requests.post(f"{SERVER_URL}/submit_result", json={
                     "task_id": task_id,
-                    "output": output
+                    "output": output,
+                    "execution_time": execution_duration # 🔥 ВОТ ОНО!
                 })
-                print(f"[+] Result for {task_id} sent back to Orchestrator.")
+                print(f"[+] Result for {task_id} sent. Time taken: {execution_duration}s")
                 
                 # Убираем за собой мусор
                 if os.path.exists("temp_task.py"):
@@ -71,9 +78,10 @@ def start_agent():
                 
         except Exception as e:
             # Если сервер упал, просто ждем
+            # print(f"Error: {e}")
             pass
             
-        time.sleep(5) # Проверяем задачи каждые 5 секунд
+        time.sleep(2) # Уменьшил до 2 сек, чтобы быстрее подхватывал
 
 if __name__ == "__main__":
     try:

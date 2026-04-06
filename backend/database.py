@@ -2,19 +2,24 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Локальная БД (в один файл)
+# Имя файла базы данных (вот именно ЭТОТ файл можно удалять для сброса)
 DATABASE_URL = "sqlite:///./aperture.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
+
     id = Column(Integer, primary_key=True, index=True)
-    wallet = Column(String, unique=True, index=True, nullable=True)
-    guest_id = Column(String, unique=True, index=True, nullable=True) # Для тех, кто без кошелька
+    guest_id = Column(String, default="guest")
+    wallet = Column(String, unique=True, index=True)
     balance = Column(Float, default=0.0)
     is_demo = Column(Boolean, default=False)
 
+# Создаем таблицы, если их нет
 Base.metadata.create_all(bind=engine)

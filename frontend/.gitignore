@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# --- Aperture Secrets & Python ---
+.env
+__pycache__/
+*.pyc
+database.db
+task_*.py
+node_log_*.txt
+results_*.txt
