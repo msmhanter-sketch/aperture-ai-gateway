@@ -46,9 +46,8 @@
 
 ## 🎬 Submission Deliverables
 
-  * **[Watch the Pitch Video]** — Full walkthrough of the vision and 10-slide deck.
-  * **[Watch the Live Demo]** — End-to-end technical demo: from payload submission to on-chain settlement.
-  * **[Live App]** — [aperture-ai-gateway.vercel.app](https://www.google.com/search?q=https://aperture-ai-gateway.vercel.app)
+  * **[[Watch the Pitch Video](https://www.loom.com/share/ceecb98b07cc4885ad0459822e5e189c)]** — Full walkthrough of the vision and 10-slide deck.
+  * **[Live Demo](https://www.loom.com/share/470f0a3913bb430cb1108aeb234dd7ef)]** — End-to-end technical demo: from payload submission to on-chain settlement.
 
 -----
 
