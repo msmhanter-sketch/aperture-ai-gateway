@@ -1,3 +1,12 @@
+// 🔥 ШАГ 1: РУЧНЫЕ ПОЛИФИЛЛЫ (ДОЛЖНЫ БЫТЬ ПЕРВЫМИ!)
+import { Buffer } from 'buffer';
+import process from 'process';
+
+window.Buffer = Buffer;
+window.process = process;
+window.global = window;
+
+// Теперь всё остальное
 import React, { useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
@@ -13,7 +22,7 @@ import {
 } from '@solana/wallet-adapter-wallets';
 import { clusterApiUrl } from '@solana/web3.js';
 
-// ВАЖНО: Дефолтные стили для модального окна (без них окно не появится)
+// ВАЖНО: Дефолтные стили для модального окна
 import '@solana/wallet-adapter-react-ui/styles.css';
 
 function Root() {
@@ -27,7 +36,6 @@ function Root() {
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      {/* autoConnect={false} убивает "призрака", заставляя окно выбора появляться всегда */}
       <WalletProvider wallets={wallets} autoConnect={false}>
         <WalletModalProvider>
           <App />

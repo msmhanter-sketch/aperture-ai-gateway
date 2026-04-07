@@ -13,30 +13,25 @@ export default function App() {
   const { setVisible } = useWalletModal();
 
   // Состояния
-  const [showTerminal, setShowTerminal] = useState(false); // Управляет переходом в Дашборд
+  const [showTerminal, setShowTerminal] = useState(false); 
   const [balance, setBalance] = useState(0); 
-  const [creditBalance, setCreditBalance] = useState(0.01); // 🔥 Стейт для демо-кредитов Aperture
-  const [showFinanceMenu, setShowFinanceMenu] = useState(false); // Меню депозита
+  const [showFinanceMenu, setShowFinanceMenu] = useState(false); 
+  const [isModalOpen, setIsModalOpen] = useState(false); 
 
-  // Подтягиваем баланс прямо на главную страницу
   useEffect(() => {
     if (publicKey) {
       connection.getBalance(publicKey).then((bal) => {
         setBalance(bal / LAMPORTS_PER_SOL);
       });
-      // Примечание: Здесь можно добавить axios запрос к бэкенду для получения точного creditBalance из БД, 
-      // но для главной страницы (лендинга) стартовое значение 0.01 выглядит отлично.
     } else {
       setBalance(0);
     }
   }, [publicKey, connection]);
 
-  // Если юзер САМ нажал "Launch Terminal" — только тогда рендерим черный Дашборд
   if (showTerminal) {
     return <Dashboard />;
   }
 
-  // ИНАЧЕ показываем главную светлую страницу
   return (
     <div style={{ 
       minHeight: '100vh', 
@@ -47,6 +42,17 @@ export default function App() {
       overflow: 'hidden',
       fontFamily: '"Inter", sans-serif'
     }}>
+      
+      <style>{`
+        @keyframes modalFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes modalSlideUp {
+          from { opacity: 0; transform: translateY(30px) scale(0.95); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
       
       {/* Фоновая сетка */}
       <div style={{
@@ -70,7 +76,6 @@ export default function App() {
         
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           
-          {/* ЕСЛИ ПОДКЛЮЧЕН — ПОКАЗЫВАЕМ БАЛАНС И МЕНЮ, ЕСЛИ НЕТ — КНОПКУ CONNECT */}
           {connected ? (
             <div style={{ position: 'relative' }}>
               <div 
@@ -78,7 +83,7 @@ export default function App() {
                 style={{ 
                   display: 'flex', alignItems: 'center', gap: '10px', 
                   backgroundColor: '#ffffff', border: '1px solid #e5e7eb', 
-                  borderRadius: '12px', padding: '6px 12px', cursor: 'pointer',
+                  borderRadius: '12px', padding: '10px 16px', cursor: 'pointer',
                   boxShadow: '0 2px 4px rgba(0,0,0,0.02)', transition: 'all 0.2s'
                 }}
                 onMouseOver={(e) => e.currentTarget.style.borderColor = '#d1d5db'}
@@ -90,30 +95,15 @@ export default function App() {
                     {publicKey ? `${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)}` : ''}
                   </span>
                   
-                  {/* Основной баланс SOL */}
-                  <span style={{ fontSize: '14px', color: '#111827', fontWeight: '800', lineHeight: '1.2' }}>
+                  <span style={{ fontSize: '16px', color: '#111827', fontWeight: '800', lineHeight: '1.2' }}>
                     {balance.toFixed(4)} SOL
                   </span>
-
-                  {/* 🔥 НОВЫЙ БЛОК: Сгорающий баланс Кредитов */}
-                  <span style={{ 
-                    fontSize: '10px', 
-                    color: '#64748b', 
-                    fontFamily: 'monospace', 
-                    marginTop: '2px',
-                    borderTop: '1px solid #e5e7eb',
-                    paddingTop: '2px'
-                  }}>
-                    <span style={{ color: '#ef4444' }}>⚡</span> DEMO: {creditBalance.toFixed(4)} CRD
-                  </span>
-
                 </div>
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showFinanceMenu ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
                   <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
               </div>
 
-              {/* Выпадающее светлое меню */}
               {showFinanceMenu && (
                 <div style={{ 
                   position: 'absolute', top: '100%', right: 0, marginTop: '10px',
@@ -125,13 +115,8 @@ export default function App() {
                     <button onClick={() => setShowFinanceMenu(false)} style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>✕</button>
                   </div>
                   
-                  <div style={{ fontSize: '28px', fontWeight: '900', color: '#111827', marginBottom: '4px' }}>
+                  <div style={{ fontSize: '28px', fontWeight: '900', color: '#111827', marginBottom: '20px' }}>
                     {balance.toFixed(4)} <span style={{ fontSize: '16px', color: '#10b981' }}>SOL</span>
-                  </div>
-
-                  {/* 🔥 НОВЫЙ БЛОК В МЕНЮ: Кредиты */}
-                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#64748b', marginBottom: '20px', fontFamily: 'monospace' }}>
-                    <span style={{ color: '#ef4444' }}>⚡</span> {creditBalance.toFixed(4)} APERTURE CREDITS
                   </div>
 
                   <div style={{ display: 'flex', gap: '10px' }}>
@@ -151,7 +136,6 @@ export default function App() {
             </div>
           )}
           
-          {/* Кнопка смены кошелька (остается всегда) */}
           <button 
             onClick={() => setVisible(true)}
             style={{ 
@@ -160,7 +144,7 @@ export default function App() {
               backgroundColor: '#ffffff', border: '1px solid #e5e7eb', cursor: 'pointer',
               boxShadow: '0 2px 10px rgba(0,0,0,0.02)', transition: 'all 0.2s ease'
             }}
-            title="Сменить кошелек"
+            title="Switch Wallet"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#111827" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M16 3h5v5M4 20L9 21v-5M21 3l-6 6M3 21l6-6"/>
@@ -197,8 +181,6 @@ export default function App() {
           <p style={{ fontSize: '18px', color: '#6b7280', lineHeight: '1.6', fontWeight: '400', marginBottom: '40px', maxWidth: '400px' }}>Autonomous AI Compute Protocol.<br/>Real-time validation settled in Lamports.</p>
 
           <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' }}>
-            
-            {/* ЕСЛИ ПОДКЛЮЧЕН КОШЕЛЕК — ПОКАЗЫВАЕМ КНОПКУ ПЕРЕХОДА В ДАШБОРД */}
             {connected ? (
               <button 
                 onClick={() => setShowTerminal(true)}
@@ -212,7 +194,10 @@ export default function App() {
               </div>
             )}
 
-            <button style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '48px', padding: '0 24px', backgroundColor: '#111827', color: '#ffffff', borderRadius: '4px', border: 'none', fontSize: '15px', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+            <button 
+              onClick={() => setIsModalOpen(true)}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '48px', padding: '0 24px', backgroundColor: '#111827', color: '#ffffff', borderRadius: '4px', border: 'none', fontSize: '15px', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
+            >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
               Provide Compute
             </button>
@@ -240,6 +225,84 @@ export default function App() {
       <footer style={{ padding: '24px', textAlign: 'center', position: 'relative', zIndex: 20, fontSize: '11px', fontWeight: '600', letterSpacing: '2px', color: '#9ca3af' }}>
         APERTURE PROTOCOL V1.0 <span style={{ margin: '0 8px', color: '#d1d5db' }}>|</span> ZERO_REQUIEM
       </footer>
+
+      {/* Модалка Telegram */}
+      {isModalOpen && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+          backgroundColor: 'rgba(15, 23, 42, 0.4)', 
+          backdropFilter: 'blur(8px)', 
+          display: 'flex', justifyContent: 'center', alignItems: 'center', 
+          zIndex: 9999, padding: '20px',
+          animation: 'modalFadeIn 0.2s ease-out forwards'
+        }}>
+          <div style={{
+            background: '#FFFFFF', 
+            borderRadius: '24px', 
+            padding: '40px', 
+            maxWidth: '420px',
+            width: '100%',
+            textAlign: 'center', 
+            border: '1px solid #E2E8F0', 
+            boxShadow: '0 20px 40px rgba(0,0,0,0.1)',
+            position: 'relative',
+            animation: 'modalSlideUp 0.3s ease-out forwards'
+          }}>
+            <div style={{ fontSize: '11px', fontWeight: '800', color: '#10B981', marginBottom: '15px', letterSpacing: '1px' }}>
+              ● LIVE NETWORK
+            </div>
+            
+            <h2 style={{ margin: '0 0 15px', fontSize: '22px', fontWeight: '900', color: '#0F172A' }}>
+              Node Provider Registration
+            </h2>
+            
+            <p style={{ color: '#475569', fontSize: '14px', lineHeight: '1.6', marginBottom: '30px' }}>
+              Public registration for GPU compute nodes is currently in private beta. <br/><br/>
+              Want to become an early provider or discuss the architecture? Drop me a message!
+            </p>
+
+            <a 
+              href="https://t.me/nemezidam" 
+              target="_blank" 
+              rel="noreferrer" 
+              style={{
+                display: 'block', 
+                backgroundColor: '#512da8', 
+                color: '#FFF', 
+                textDecoration: 'none',
+                padding: '16px', 
+                borderRadius: '14px', 
+                fontWeight: '800', 
+                marginBottom: '15px',
+                fontSize: '15px',
+                transition: 'transform 0.1s, box-shadow 0.1s',
+                boxShadow: '0 4px 15px rgba(81, 45, 168, 0.2)'
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = '0 6px 20px rgba(81, 45, 168, 0.3)';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+                e.currentTarget.style.boxShadow = '0 4px 15px rgba(81, 45, 168, 0.2)';
+              }}
+            >
+              💬 Contact @nemezidam
+            </a>
+
+            <button 
+              onClick={() => setIsModalOpen(false)} 
+              style={{
+                background: 'none', border: 'none', color: '#94A3B8', 
+                fontWeight: '700', fontSize: '14px', cursor: 'pointer',
+                textDecoration: 'underline'
+              }}
+            >
+              Close Window
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

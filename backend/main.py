@@ -1,27 +1,26 @@
+import os
 import uuid
 import time
 import asyncio
-import database
 import base58
 import requests
-from fastapi import FastAPI, Depends, HTTPException
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse # Для отдачи логов файлом
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 from typing import Optional, Dict, List
 from contextlib import asynccontextmanager
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
 
-# Твои модули
 from ai_engine import analyze_code_complexity
 from solana_client import SolanaClient
 
-HELIUS_API_KEY = "04eaffb2-c41c-4bd4-967d-a64f7b1bab1a"
-HELIUS_URL = f"https://devnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+load_dotenv()
 
-# --- УТИЛИТЫ ---
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "04eaffb2-c41c-4bd4-967d-a64f7b1bab1a")
+HELIUS_URL = f"https://devnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
 def verify_signature(public_key_str: str, signature_bytes: list, message_str: str):
     try:
@@ -36,7 +35,6 @@ def verify_signature(public_key_str: str, signature_bytes: list, message_str: st
         return False
 
 def mint_compute_receipt(wallet: str, task_id: str, duration: float, cost: float, ai_verdict: str):
-    """Минтинг cNFT чека через Helius"""
     print(f"[🛠️] Minting receipt for {wallet}...")
     payload = {
         "jsonrpc": "2.0",
@@ -62,17 +60,13 @@ def mint_compute_receipt(wallet: str, task_id: str, duration: float, cost: float
         if "result" in res_data:
             print(f"[⛓️] ON-CHAIN RECEIPT MINTED: {res_data['result']['signature']}")
             return res_data['result']['signature']
-        else:
-            print(f"[!] Minting Failed: {res_data.get('error')}")
     except Exception as e:
         print(f"[!] Helius Request Error: {e}")
     return None
 
-# --- APP CONFIG ---
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🟢 Aperture AI Oracle: Systems Online. Helius Connected.")
+    print("🟢 Aperture AI Oracle: Systems Online.")
     yield
     await solana_client.close()
     print("🛑 Aperture AI Oracle: Systems Offline.")
@@ -87,10 +81,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Память сервера
+# --- ПАМЯТЬ СЕРВЕРА (Только временные логи и воркеры) ---
 nodes: Dict[str, dict] = {}
 pending_tasks: List[dict] = []
-completed_tasks: Dict[str, str] = {}
+completed_tasks: Dict[str, str] = {} 
+full_logs: Dict[str, str] = {}       
 active_tasks_rates = {} 
 
 class RunRequest(BaseModel):
@@ -100,154 +95,128 @@ class RunRequest(BaseModel):
     message: str          
     guest_id: Optional[str] = "guest"
 
-class DepositRequest(BaseModel):
-    wallet: str
-    signature: str 
-    amount: float
-
 class NodeInfo(BaseModel):
     node_id: str
     gpu_name: str
     vram_total: float
 
-def get_db():
-    db = database.SessionLocal()
-    try: yield db
-    finally: db.close()
-
-# --- ROUTES ---
-
 @app.get("/price")
 def get_sol_price():
-    """Эндпоинт для получения цены SOL (фикс 404)"""
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", timeout=2)
-        price = float(r.json()['price'])
-        return {"price": price}
+        return {"price": float(r.json()['price'])}
     except Exception:
         return {"price": 182.45}
 
 @app.get("/balance/{wallet_address}")
-def get_balance(wallet_address: str, db: Session = Depends(get_db)):
-    user = db.query(database.User).filter(database.User.wallet == wallet_address).first()
-    if not user:
-        user = database.User(guest_id="guest", wallet=wallet_address, balance=0.0, is_demo=False)
-        db.add(user)
-        db.commit()
-    return {"balance": round(user.balance, 8)}
-
-@app.post("/deposit")
-async def process_deposit(req: DepositRequest, db: Session = Depends(get_db)):
-    user = db.query(database.User).filter(database.User.wallet == req.wallet).first()
-    if not user:
-        user = database.User(guest_id="guest", wallet=req.wallet, balance=0.0, is_demo=False)
-        db.add(user)
-    
-    user.balance += req.amount
-    db.commit()
-    return {"status": "success", "new_balance": user.balance}
+async def get_balance(wallet_address: str):
+    """Теперь мы читаем баланс прямо из смарт-контракта!"""
+    try:
+        # Эта функция появится в solana_client на следующем шаге
+        balance_lamports = await solana_client.get_channel_balance(wallet_address)
+        balance_sol = balance_lamports / 1_000_000_000
+        return {"balance": round(balance_sol, 8)}
+    except Exception as e:
+        print(f"🔴 Error reading on-chain balance: {e}")
+        return {"balance": 0.0}
 
 @app.post("/execute")
-async def execute_code(req: RunRequest, db: Session = Depends(get_db)):
+async def execute_code(req: RunRequest):
     if not verify_signature(req.wallet, req.signature, req.message):
         raise HTTPException(status_code=401, detail="Invalid Signature")
 
-    user = db.query(database.User).filter(database.User.wallet == req.wallet).first()
-    
-    if not user or user.balance < 0.001:
-        raise HTTPException(status_code=402, detail="Insufficient SOL for startup fee (0.001 required)")
+    # Проверяем баланс On-Chain
+    balance_lamports = await solana_client.get_channel_balance(req.wallet)
+    if balance_lamports < 1000000: # Минимум 0.001 SOL (в лампортах)
+        raise HTTPException(status_code=402, detail="Insufficient locked SOL in Payment Channel.")
 
-    # Входной билет
-    STARTUP_FEE = 0.001
-    user.balance = max(0, user.balance - STARTUP_FEE)
-    db.commit()
-    print(f"[🎟️] STARTUP FEE COLLECTED: {req.wallet} paid {STARTUP_FEE} SOL.")
-
+    # 🧠 ВЫЗОВ ИИ-ОРАКУЛА
     ai_result = analyze_code_complexity(req.code)
     
+    reason = ai_result.get("scores", {}).get("reason", "No explanation provided.")
+    complexity = ai_result.get("complexity_score", 0)
+    burn_rate_sol = ai_result.get("calculated_rate_sol_sec", 0.00000100)
+    
+    # Переводим SOL в Lamports (1 SOL = 10^9 Lamports)
+    burn_rate_lamports = int(burn_rate_sol * 1_000_000_000)
+
+    print("\n" + "="*50)
+    print(f"🧠 [AGENT REASONING]: {reason}")
+    print(f"📊 [COMPLEXITY SCORE]: {complexity}/100")
+    print(f"🔥 [DYNAMIC RATE]: {burn_rate_sol:.8f} SOL/sec ({burn_rate_lamports} lamports)")
+    print("="*50 + "\n")
+
     if ai_result.get("security") == "DANGEROUS":
         print(f"[🚨] MALICIOUS CODE BLOCKED from {req.wallet}")
         raise HTTPException(status_code=403, detail="AI Sentinel blocked execution: Malicious code detected.")
 
-    burn_rate = ai_result.get("calculated_rate_sol_sec", 0.0001)
     ai_verdict = ai_result.get("scores", {}).get("reason", "AI Verified Compute")
-    
     task_id = f"task-{uuid.uuid4().hex[:6]}"
 
-    # Отправляем AI-вердикт в ончейн (Solana)
-    try:
-        tx_sig = await solana_client.send_ai_verdict(user_wallet=req.wallet, task_id=task_id, burn_rate=burn_rate)
-        on_chain_proof = f"https://explorer.solana.com/tx/{tx_sig}?cluster=devnet"
-    except Exception:
-        on_chain_proof = "Pending confirmation..."
+    # 🔗 МАГИЯ: ИИ МЕНЯЕТ СТЕЙТ БЛОКЧЕЙНА (ВКЛЮЧАЕТ СЧЕТЧИК)
+    tx_sig = await solana_client.update_burn_rate(user_pubkey_str=req.wallet, new_rate_lamports=burn_rate_lamports)
+    
+    if not tx_sig:
+        raise HTTPException(status_code=500, detail="Failed to update smart contract state. Execution aborted.")
+
+    on_chain_proof = f"https://explorer.solana.com/tx/{tx_sig}?cluster=devnet"
 
     active_tasks_rates[task_id] = {
         "wallet": req.wallet,
-        "rate": burn_rate,
+        "rate_sol": burn_rate_sol,
         "start_time": time.time(),
         "proof": on_chain_proof,
         "ai_verdict": ai_verdict
     }
 
-    pending_tasks.append({"task_id": task_id, "code": req.code})
+    pending_tasks.append({"task_id": task_id, "code": req.code, "wallet": req.wallet})
     
     return {
         "status": "success",
         "task_id": task_id,
-        "burn_rate": burn_rate,
-        "startup_fee_paid": STARTUP_FEE,
-        "current_balance": user.balance,
+        "burn_rate": burn_rate_sol,
         "on_chain_proof": on_chain_proof
     }
 
 @app.post("/submit_result")
-def submit_result(payload: dict, db: Session = Depends(get_db)):
+async def submit_result(payload: dict):
     task_id = payload.get("task_id")
-    output = payload.get("output")
+    output = payload.get("output", "")
+    full_log_data = payload.get("full_log", output) 
     execution_time = payload.get("execution_time", 0) 
     
     if task_id in active_tasks_rates:
         info = active_tasks_rates.pop(task_id)
-        # Считаем итоговую стоимость выполнения
-        final_cost = round(execution_time * info["rate"], 8)
+        final_cost = round(execution_time * info["rate_sol"], 8)
 
-        user = db.query(database.User).filter(database.User.wallet == info["wallet"]).first()
-        if user:
-            user.balance = max(0, user.balance - final_cost)
-            db.commit()
-            
-            # Общая стоимость для чека (фи плюс выполнение)
-            total_cost_for_receipt = final_cost + 0.001 
-            
-            # Выпуск NFT чека
-            mint_compute_receipt(
-                wallet=info["wallet"],
-                task_id=task_id,
-                duration=execution_time,
-                cost=total_cost_for_receipt,
-                ai_verdict=info["ai_verdict"]
-            )
-            print(f"[💰] SETTLEMENT: {task_id}. Execution charged: {final_cost:.8f} SOL.")
+        # 🔗 МАГИЯ: ИИ ОСТАНАВЛИВАЕТ СЧЕТЧИК В БЛОКЧЕЙНЕ (rate = 0)
+        stop_sig = await solana_client.update_burn_rate(user_pubkey_str=info["wallet"], new_rate_lamports=0)
+        print(f"🛑 [ON-CHAIN] Burn rate set to 0. Stop TX: {stop_sig}")
+        
+        # Минтим чек
+        mint_compute_receipt(
+            wallet=info["wallet"],
+            task_id=task_id,
+            duration=execution_time,
+            cost=final_cost,
+            ai_verdict=info["ai_verdict"]
+        )
 
-    # Сохраняем ПОЛНЫЙ аутпут для возможности скачивания
-    completed_tasks[task_id] = output
+    completed_tasks[task_id] = output          
+    full_logs[task_id] = full_log_data         
     return {"status": "saved"}
 
 @app.post("/stop/{task_id}")
-async def stop_task(task_id: str, db: Session = Depends(get_db)):
+async def stop_task(task_id: str):
     if task_id in active_tasks_rates:
         info = active_tasks_rates.pop(task_id)
-        duration = time.time() - info["start_time"]
-        final_cost = round(duration * info["rate"], 8)
         
-        user = db.query(database.User).filter(database.User.wallet == info["wallet"]).first()
-        if user:
-            user.balance = max(0, user.balance - final_cost)
-            db.commit()
-            print(f"[🛑] TASK ABORTED: {task_id}. Charged: {final_cost:.8f} SOL.")
+        # 🔗 ОСТАНАВЛИВАЕМ СЧЕТЧИК В БЛОКЧЕЙНЕ ПРИ ПРИНУДИТЕЛЬНОЙ ОТМЕНЕ
+        stop_sig = await solana_client.update_burn_rate(user_pubkey_str=info["wallet"], new_rate_lamports=0)
+        print(f"🛑 [ON-CHAIN] User aborted task. Burn rate set to 0. Stop TX: {stop_sig}")
         
         completed_tasks[task_id] = "EXECUTION_ABORTED_BY_USER"
-        return {"status": "stopped", "final_cost": final_cost}
+        return {"status": "stopped"}
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/result/{task_id}")
@@ -258,14 +227,13 @@ def get_result(task_id: str):
 
 @app.get("/download/{task_id}")
 def download_result(task_id: str):
-    """Возвращает полный лог задачи в виде .txt файла для скачивания"""
-    if task_id in completed_tasks:
-        content = completed_tasks[task_id]
+    if task_id in full_logs:
+        content = full_logs[task_id]
         return PlainTextResponse(
             content, 
             headers={"Content-Disposition": f"attachment; filename=aperture_log_{task_id}.txt"}
         )
-    raise HTTPException(status_code=404, detail="Log file not found or task incomplete")
+    raise HTTPException(status_code=404, detail="Log file not found")
 
 @app.post("/register_node")
 async def register_node(info: NodeInfo):

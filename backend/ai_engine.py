@@ -67,7 +67,7 @@ def calculate_quantum_price(complexity_sum, hw_power=2.5, telemetry_delta=0.0):
     final_rate = round(rate_per_sec * aps_multiplier, 8)
     
     # Ограничиваем "вилку" цен: от $0.30 до $5.00 за час в эквиваленте SOL
-    return max(final_rate, 0.00000050)
+    return max(final_rate, 0.00000100)
 
 def analyze_code_complexity(code_snippet: str):
     """
@@ -98,7 +98,7 @@ def analyze_code_complexity(code_snippet: str):
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash', # Используем актуальную модель
+            model='gemini-2.5-flash', # Используем актуальную модель
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

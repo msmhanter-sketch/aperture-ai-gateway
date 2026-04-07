@@ -2,13 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
-import { LAMPORTS_PER_SOL, Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
+import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { Program, AnchorProvider, web3, BN } from '@project-serum/anchor'; 
 
-// Подключаем логотип
 import logo from './assets/logo.png';
+import idl from './assets/aperture_gateway.json'; 
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
-const TREASURY = "8KhV8aMHmofqPreou1wkf2PtbbYNTSWDyekSZALsEvh2";
+const TREASURY = "7wFo7q4EHfKrBNpL4XLXXWAi9TcE6BD27ZoQoBqtFcNQ"; 
+const PROGRAM_ID = new PublicKey("C2q9yxux7b7bxFF64pkZUV6g2Vcs2bQ1FS4GUQy512wv"); 
 
 const Dashboard = () => {
   const [walletBalance, setWalletBalance] = useState(0); 
@@ -23,7 +25,8 @@ const Dashboard = () => {
   
   const terminalEndRef = useRef(null);
   const fileInputRef = useRef(null); 
-  const { publicKey, sendTransaction, signMessage, disconnect } = useWallet();
+  
+  const { publicKey, signTransaction, signAllTransactions, signMessage, sendTransaction, disconnect } = useWallet();
   const { connection } = useConnection();
   const { setVisible } = useWalletModal(); 
 
@@ -53,14 +56,24 @@ const Dashboard = () => {
     try {
       const bal = await connection.getBalance(publicKey);
       setWalletBalance(bal / LAMPORTS_PER_SOL);
-      const res = await axios.get(`${API_URL}/balance/${publicKey.toBase58()}`);
-      setInternalBalance(res.data.balance);
+
+      const [channelPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("channel"), publicKey.toBuffer()],
+        PROGRAM_ID
+      );
+      const pdaBalance = await connection.getBalance(channelPda) / LAMPORTS_PER_SOL;
+
+      const spentKey = `spent_${publicKey.toBase58()}`;
+      const offchainSpent = parseFloat(localStorage.getItem(spentKey)) || 0;
+
+      const actualAvailable = Math.max(0, pdaBalance - offchainSpent);
+      setInternalBalance(actualAvailable);
+
     } catch (e) { console.error("Sync failed", e); }
   };
 
   useEffect(() => { syncBalances(); }, [publicKey]);
 
-  // Визуальное списание топлива на фронте
   useEffect(() => {
     let timer;
     if (status === 'RUNNING' && burnRate > 0) {
@@ -83,22 +96,64 @@ const Dashboard = () => {
   };
 
   const deposit = async (amount) => {
-    if (!publicKey) return setVisible(true);
+    if (!publicKey || !signTransaction) return setVisible(true);
+    
+    const cleanAmount = typeof amount === 'string' ? parseFloat(amount.replace(',', '.')) : amount;
+
     try {
-      addLog(`⛽ Refilling: ${amount} SOL...`);
-      const tx = new Transaction().add(SystemProgram.transfer({
-        fromPubkey: publicKey,
-        toPubkey: new PublicKey(TREASURY),
-        lamports: Math.round(amount * LAMPORTS_PER_SOL),
-      }));
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, 'confirmed');
-      const res = await axios.post(`${API_URL}/deposit`, { wallet: publicKey.toBase58(), amount: amount, signature: sig });
-      setInternalBalance(res.data.new_balance);
+      addLog(`⛽ Checking Payment Channel status...`);
+
+      const provider = new AnchorProvider(
+        connection, 
+        { publicKey, signTransaction, signAllTransactions }, 
+        AnchorProvider.defaultOptions()
+      );
+      const program = new Program(idl, PROGRAM_ID, provider);
+
+      const [channelPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("channel"), publicKey.toBuffer()],
+        program.programId
+      );
+
+      const accountInfo = await connection.getAccountInfo(channelPda);
+      
+      if (accountInfo) {
+        addLog(`✅ Channel detected! Topping up ${cleanAmount} SOL...`);
+        
+        const tx = new Transaction().add(
+            SystemProgram.transfer({
+                fromPubkey: publicKey,
+                toPubkey: channelPda,
+                lamports: Math.round(cleanAmount * LAMPORTS_PER_SOL),
+            })
+        );
+        const txSig = await sendTransaction(tx, connection);
+        addLog(`⛓️ [ON-CHAIN] Top-up sent! TX: ${txSig.slice(0,8)}...`);
+        
+        setTimeout(syncBalances, 3000);
+        return; 
+      }
+
+      addLog(`🚀 Opening NEW Payment Channel: ${cleanAmount} SOL...`);
+      const lamports = new BN(cleanAmount * LAMPORTS_PER_SOL);
+
+      const txSig = await program.methods.openChannel(lamports)
+        .accounts({
+          channel: channelPda,
+          user: publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      addLog(`⛓️ [ON-CHAIN] Channel opened! TX: ${txSig.slice(0,10)}...`);
       addLog(`💰 Tank Refilled!`);
-      syncBalances();
+      
+      setTimeout(syncBalances, 3000);
+
     } catch (e) {
-      addLog(`❌ Transaction Error.`);
+      console.error("FULL ERROR DETAILS:", e);
+      const errorMsg = e.message || "Simulation failed";
+      addLog(`❌ Transaction Error: ${errorMsg.split('\n')[0]}`);
     }
   };
 
@@ -118,10 +173,8 @@ const Dashboard = () => {
   const runTask = async () => {
     if (!publicKey) return setVisible(true);
     
-    // СНИЖАЕМ ПОРОГ: Теперь пускаем даже с 0.002 SOL
-    // Это покроет Audit Fee (0.001) и даст ~15 минут работы на низком burn_rate
     if (internalBalance < 0.002) {
-        addLog("⚠️ Fuel Low (min 0.002 SOL)");
+        addLog("⚠️ Fuel Low (min 0.002 SOL). Please deposit.");
         return;
     }
 
@@ -139,29 +192,33 @@ const Dashboard = () => {
         message: message
       });
       
-      const { task_id, burn_rate, startup_fee_paid, on_chain_proof } = res.data;
+      const { task_id, burn_rate, startup_fee_paid, fee, on_chain_proof } = res.data;
+      const actualFee = startup_fee_paid || fee || 0.001;
       
-      setBurnRate(burn_rate);
+      setBurnRate(burn_rate || 0.0001);
       setCurrentTaskId(task_id);
 
-      addLog(`🎟️ Audit Fee: ${startup_fee_paid} SOL paid.`);
-      addLog(`🔥 Burn Rate: ${burn_rate.toFixed(8)} SOL/sec`);
+      addLog(`🎟️ Audit Fee: ${actualFee} SOL paid.`);
+      addLog(`🔥 Burn Rate: ${(burn_rate || 0.0001).toFixed(6)} SOL/sec`);
       addLog(`🚀 Execution Started. ID: ${task_id.slice(0,8)}`);
       
-      if (on_chain_proof) {
-          console.log("On-chain proof:", on_chain_proof);
-      }
+      // 🔥 ЖЕЛЕЗОБЕТОННЫЙ ДВОЙНОЙ ЗАМОК 🔥
+      let isSettling = false;
+      let isPolling = false;
 
       const poll = setInterval(async () => {
+        if (isSettling || isPolling) return; // Защита от наложения запросов в полете
+        isPolling = true;
+
         try {
           const r = await axios.get(`${API_URL}/result/${task_id}`);
           
           if (r.data.status === 'completed') {
+            if (isSettling) return; // Вторая проверка после await
+            isSettling = true; 
             clearInterval(poll);
             setStatus('IDLE');
             setBurnRate(0);
-            
-            addLog(`✅ Task Finished Successfully.`);
             
             if (r.data.output) {
                 const lines = r.data.output.split('\n');
@@ -170,16 +227,49 @@ const Dashboard = () => {
                 });
             }
             
-            addLog(`🧾 Compute Receipt Generated.`);
-            syncBalances();
+            addLog(`⚡ AI Oracle triggered On-Chain Settlement...`);
+            
+            try {
+                const treasuryKey = new PublicKey(TREASURY);
+                const tx = new Transaction().add(
+                    SystemProgram.transfer({
+                        fromPubkey: publicKey,
+                        toPubkey: treasuryKey,
+                        lamports: Math.round(actualFee * LAMPORTS_PER_SOL),
+                    })
+                );
+                
+                const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+                tx.recentBlockhash = latestBlockhash.blockhash;
+                tx.feePayer = publicKey;
+                
+                const txSig = await sendTransaction(tx, connection);
+                addLog(`⛓️ [ON-CHAIN] Invoice Settled! TX: ${txSig.slice(0,8)}...`);
+                addLog(`🏦 Funds securely transferred to Node Treasury.`);
+                addLog(`✅ Task Finished Successfully.`);
+                
+                // Списываем только ОДИН раз в случае успешной транзакции
+                const spentKey = `spent_${publicKey.toBase58()}`;
+                const currentSpent = parseFloat(localStorage.getItem(spentKey)) || 0;
+                localStorage.setItem(spentKey, currentSpent + actualFee + 0.0005);
+                
+                syncBalances();
+
+            } catch (err) {
+                console.error("Wallet signing error:", err);
+                addLog(`❌ Settlement rejected by user.`);
+                syncBalances(); // Синхроним баланс даже при отмене
+            }
           }
         } catch (e) {
             console.error("Polling error", e);
+        } finally {
+            isPolling = false; // Освобождаем замок для следующего тика (если статус не completed)
         }
       }, 1000);
       
     } catch (e) {
-      addLog(`❌ AI Firewall Blocked execution.`);
+      addLog(`❌ Execution failed or blocked by AI.`);
       setStatus('IDLE');
     }
   };
@@ -291,7 +381,7 @@ const Dashboard = () => {
                 <div key={i} style={{ 
                     fontSize: '13px', 
                     marginBottom: '8px', 
-                    color: l.includes('>') ? '#2DD4BF' : (l.includes('✅') ? '#10B981' : (l.includes('❌') ? '#EF4444' : '#475569')), 
+                    color: l.includes('>') ? '#2DD4BF' : (l.includes('✅') || l.includes('ON-CHAIN') || l.includes('🏦') || l.includes('⚡') ? '#10B981' : (l.includes('❌') ? '#EF4444' : '#475569')), 
                     fontFamily: 'monospace', 
                     borderBottom: '1px solid rgba(0,0,0,0.02)', 
                     paddingBottom: '4px' 
@@ -322,8 +412,8 @@ const Dashboard = () => {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
           <div style={cardStyle}>
-            <h3 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '10px' }}>Refill Tank</h3>
-            <p style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '25px', lineHeight: '1.5' }}>Load credits to power decentralized AI compute tasks.</p>
+            <h3 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '10px' }}>Open Payment Channel</h3>
+            <p style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '25px', lineHeight: '1.5' }}>Lock SOL in the Smart Contract to power decentralized AI compute tasks.</p>
             <div style={{ position: 'relative', marginBottom: '20px' }}>
                 <input type="number" value={customDeposit} onChange={e => setCustomDeposit(e.target.value)} style={{ width: '100%', padding: '18px', borderRadius: '14px', border: '1.5px solid #E2E8F0', outline: 'none', fontSize: '18px', fontWeight: '800', color: '#000' }} />
                 <span style={{ position: 'absolute', right: '18px', top: '50%', transform: 'translateY(-50%)', fontWeight: '900', color: '#475569', background: '#F1F5F9', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', border: '1px solid #E2E8F0' }}>SOL</span>
